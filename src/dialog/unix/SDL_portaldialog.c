@@ -25,9 +25,11 @@
 
 #ifdef SDL_USE_LIBDBUS
 
+#include <libgen.h>
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #define PORTAL_DESTINATION "org.freedesktop.portal.Desktop"
@@ -410,7 +412,41 @@ void SDL_Portal_ShowFileDialogWithProperties(SDL_FileDialogType type, SDL_Dialog
         DBus_AppendFilters(dbus, &options, filters, nfilters);
     }
     if (default_location) {
-        DBus_AppendByteArray(dbus, &options, "current_folder", default_location);
+        char *basec = SDL_strdup(default_location);
+        char *dirc = SDL_strdup(default_location);
+        const char *default_name = basename(basec);
+        const char *default_folder = dirname(dirc);
+        struct stat statbuf;
+
+        if (stat(default_location, &statbuf) == 0) {
+            SDL_LogDebug(SDL_LOG_CATEGORY_SYSTEM, "dialog location exists");
+            if (S_ISDIR(statbuf.st_mode)) {
+                SDL_LogDebug(SDL_LOG_CATEGORY_SYSTEM, "dialog location is dir: set current_folder");
+                // Use current_folder if the location is an existing folder
+                DBus_AppendByteArray(dbus, &options, "current_folder", default_location);
+            } else {
+                // Use current_file if the location is an existing file
+                SDL_LogDebug(SDL_LOG_CATEGORY_SYSTEM, "dialog location is other: set current_file");
+                //DBus_AppendByteArray(dbus, &options, "current_folder", default_folder);
+                DBus_AppendByteArray(dbus, &options, "current_file", default_location);
+                // Maybe setting current_name works around a bug(?) in kde
+                //  The Kde portal removes the file extension. It has the capacity to set it automatically based on the current filter
+                //  However the portal `current_filter` seems a little trickey to guess based on the file location
+                //    and would be best left up to the portal if wanted
+                //DBus_AppendStringOption(dbus, &options, "current_name", default_name);
+            }
+        } else if (errno == ENOENT) {
+            SDL_LogDebug(SDL_LOG_CATEGORY_SYSTEM, "dialog location doesn't exist");
+            if ((stat(default_folder, &statbuf) == 0) && (S_ISDIR(statbuf.st_mode))) {
+                SDL_LogDebug(SDL_LOG_CATEGORY_SYSTEM, "dialog location parent is directory");
+                DBus_AppendByteArray(dbus, &options, "current_folder", default_folder);
+                DBus_AppendStringOption(dbus, &options, "current_name", default_name);
+            } else {
+                // Fallback to passing the provided value as current_folder
+                SDL_LogDebug(SDL_LOG_CATEGORY_SYSTEM, "dialog location parent isn't a directory");
+                DBus_AppendByteArray(dbus, &options, "current_folder", default_location);
+            }
+        }
     }
     if (accept) {
         DBus_AppendStringOption(dbus, &options, "accept_label", accept);
